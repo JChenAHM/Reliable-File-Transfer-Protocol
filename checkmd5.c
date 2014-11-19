@@ -18,6 +18,8 @@
 #include <iostream>
 #include <errno.h>
 
+#define BUFSIZE 2048
+
 // Constants are the integer part of the sines of integers (in radians) * 2^32.
 const uint32_t k[64] = {
 	0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
@@ -159,6 +161,12 @@ void md5(const uint8_t *initial_msg, size_t initial_len, uint8_t *digest) {
 	to_bytes(h3, digest + 12);
 }
 
+/* get data length of the receiving packet */
+unsigned int getDataLen(char *packet){
+	unsigned int dataLen = ntohs(*((unsigned int*)(packet + sizeof(unsigned int)+4 * sizeof(unsigned int))));
+	return dataLen;
+}
+
 /* generate a ack packet including md5 */
 char *generateAck(unsigned int AckNum, char* md5Ack){
 	char* packet = (char*)malloc(sizeof(int)* 5);
@@ -167,16 +175,50 @@ char *generateAck(unsigned int AckNum, char* md5Ack){
 	return packet;
 }
 
-/* get md5 from the receiving packet*/
+/* get md5 from the receiving packet */
 char *getMD5(char* packet){
 	char* md5Packet = (char*)malloc(4 * sizeof(unsigned int));
 	memcpy(md5Packet, packet + sizeof(unsigned int), 4 * sizeof(unsigned int));
 	return md5Packet;
 }
 
-/* check md5 generated and md5 in receiving packet*/
-bool checkMD5(char *md5result, char *md5packet){
-	int result = memcmp(md5result, md5packet, 16);
+/* check md5 generated and md5 in receiving packet */
+bool checkMD5(char *md5packet, char *md5result){
+	int result = memcmp(md5packet, md5result, 16);
 	return result == 0 ? true : false;
+}
+
+/* check md5 when writing file*/
+/*bool checkFile(char *packet, unsigned int packageLength){
+	return true;
+}*/
+
+int main(int argc, char **argv){
+	char md5Generated[16];
+	char md5ForAck[16];
+	char* data;
+	char* ack;
+	char buf[BUFSIZE];
+	char* checkSum;
+	bool ifRightData = false;
+	while (1){
+		/*if (recvlen < 0){}*/
+		if (...){ // add condition for recvlen
+			checkSum = getMD5(buf);
+			md5((uint8_t*)data, getDataLen(buf), (uint8_t*)md5Generated);
+			ifRightData = checkMD5(checkSum, md5Generated);
+			if (ifRightData && se < 3){ // sequenceNumber
+				if (se == 1){}
+				if (se == 2){}
+				// send ack including a generated md5
+				md5((uint8_t*)&se, sizeof(int), (uint8_t*)md5ForAck);
+				ack = generateAck(se, md5ForAck);
+				if (sendto()){} // add condition for sending
+			}
+			else{
+				printf("recv corrupt packet \n");
+			}
+		}
+	}
 }
 
