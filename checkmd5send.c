@@ -196,3 +196,45 @@ void *recvAck(){// para
 		}
 	}
 }
+
+/* return a packet */
+char* getPacket(unsigned int seqN, char* checkSum, unsigned int dataLen, unsigned int size, char* data){
+	char* packet = (char*)malloc(sizeof(unsigned int)*size);
+	*((unsigned int *)packet) = htons(seqN);
+	memcpy(packet + sizeof(unsigned int), checkSum, 4 * sizeof(unsigned int));
+	*((unsigned int*)(packet + sizeof(unsigned int)+4 * sizeof(unsigned int))) = htons(dataLen);
+	memcpy(packet + 6 * sizeof(unsigned int), data, dataLen);
+	return packet;
+}
+
+int main(int argc, char **argv){
+	unsigned int packetLen = ; // packetlen
+	/* ensure the filename and filesize */
+	while (1){
+		char* fileName = ; //getFilename
+		char checkSum1[16];
+		md5((uint8_t*)fileName, strlen(fileName), (uint8_t*)checkSum1);
+		char *fileNamePac = getPacket(1, checkSum1, strlen(fileName), packetLen, fileName);
+		if (sendto()){} // sendto()
+
+		char* fileSize = (char *)&fileSize;
+		char checkSum2[16];
+		md5((uint8_t*)fileSize, sizeof(long), (uint8_t*)checkSum2);
+		char *fileSizePac = getPacket(2, checkSum2, sizeof(long), packetLen, fileSize);
+		if (sendto()){} // sendto()
+	}
+
+	bool timeout = false;
+	char checkSum3[16];
+	char checkSum4[16];
+	while (!timeout){
+		for (){ // add condition
+			memset(checkSum3, '0', 16);
+			char *packet = ; // getpacket
+			md5((uint8_t*)packet, DataLen + 24, (uint8_t*)checkSum4);
+			memcpy(packet + 4, checkSum4, 16);
+			if (sendto()){} // sendto()
+	}
+}
+
+
