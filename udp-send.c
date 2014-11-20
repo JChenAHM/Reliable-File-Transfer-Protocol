@@ -64,7 +64,7 @@ int main(int argc, char** argv)
 	for(i=0;i<PCK_ROUND*2;i++){
 		seq[i] = 0;
 	}
-	/* 0: no need for retransmission  
+	/* 0: no need to retransmission  
 	 * 1: need retransmission
 	 */
 	for(i=0;i<PCK_ROUND*2;i++){
@@ -86,6 +86,14 @@ int main(int argc, char** argv)
 	sin.sin_addr.s_addr = server_addr;
 	sin.sin_port = htons(server_port);
 	
+	FILE *fp = fopen("2.txt", "r");
+	/* get the size of the file */
+	fseek(fp,0l,SEEK_END);
+	int file_size = ftell(fp);
+	rewind(fp);
+	printf("The file size is %d\n",file_size);
+	
+	printf("check1 \n"); 
 	/* initial packet*/
 	packet = (char*)malloc(PCKSIZE*sizeof(char)); 
 	gettimeofday(&tv,NULL);
@@ -93,15 +101,15 @@ int main(int argc, char** argv)
 	*(short *) packet = (short) htons(0); /* 0 means it is a ping packet*/
 	*(int *) (packet+2) = (int) htonl(tv.tv_sec);
 	*(int *) (packet+6) = (int) htonl(tv.tv_usec);
+	*(int *) (packet+10) = (int) htonl(file_size);
 	
-	printf("sending ping message\n");
-
+	printf("sending ping pong packet\n");
 	if (sendto(sock, packet, PCKSIZE, 0, (struct sockaddr *)&sin, slen)==-1) {
 		perror("ping packet sending failure\n");
 		exit(1);
 	}
 
-	free(packet);
+	//free(packet);
 	/* now receive a pong packet from the server */
 	recvlen = recvfrom(sock, buf, BUFLEN, 0, (struct sockaddr *)&sin, &slen);
         if (recvlen >= 0) {
@@ -113,6 +121,7 @@ int main(int argc, char** argv)
 		gettimeofday(&tv,NULL);
 		//printf("tv sec: %d - %d, tv usec %d - %d\n",tv.tv_sec, tv_sec, tv.tv_usec, tv_usec);
         	rtt = 1000000*(tv.tv_sec - tv_sec) + (tv.tv_usec-tv_usec);
+		//rtt = 1000000;
 	}
 
 	printf("The RTT is %d\n",rtt);
@@ -120,8 +129,8 @@ int main(int argc, char** argv)
 	/* read file to a buffer with BUFLEN length and send it to the sever continuously*/	
 	packet = (char*)malloc(PCKSIZE*sizeof(char));
 	file_buf = (char*)malloc(BUFLEN*sizeof(char));
-	FILE *fp = fopen("2.txt", "r");
 	if (fp != NULL) {
+
 	    i = 0;
 	    la_seq = ns_seq = 0;
 	/* send PCK_ROUND number of packets at the first round */ 
@@ -141,12 +150,12 @@ int main(int argc, char** argv)
 			*(short *) (packet) = (short) htons(1); /* 1 means it is a ftp packet */
 			*(short *) (packet+2) = (short) htons(ns_seq);
 			strcpy(packet+4,file_buf);
+			int pck_size = 4+newLen;
 
-			if (sendto(sock, packet, PCKSIZE, 0, (struct sockaddr *)&sin, slen) ==-1) {
+			if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) ==-1) {
 				perror("buffer sending failure\n");
 				exit(1);
 			}
-			/* set timeout alarm*/
 			set_alarm(ns_seq,1.5*rtt);
 			seq[ns_seq] = 1;
 			/* store the buffer for retransmission */
@@ -157,10 +166,10 @@ int main(int argc, char** argv)
     	    	}
 		i++;
 	    }
-	/*  Keep waiting for acknowledgements from the server */
 	    while(1) {
 		
-		check_expire(); /* check whether there are alarms expired */
+		check_expire(); /* check whether there are alarm expired */
+		/*  Keep waiting for acknowledgements from the server */
 		/*  Make the recvfrom non blocking to receive latter acknowledgements */
 		recvlen = recvfrom(sock, packet, 20, MSG_DONTWAIT, (struct sockaddr *)&sin, &slen);
 		//printf("received length is %d\n",recvlen);
@@ -174,12 +183,14 @@ int main(int argc, char** argv)
 			if(ack_num == la_seq) { 
 				i = la_seq;
 				while(seq[i] == 2) {
-					seq[i++] = 0; /*sliding windows moving right*/
+					seq[i] = 0; /*sliding windows moving right*/
 					count++;
+					i = (i+1)%(PCK_ROUND*2);
+
 				}
 			la_seq = (la_seq+count)%(PCK_ROUND*2);
 			}
-			/* multiple packets accumulated to be sent */
+		/* multiple packets accumulated to be sent */
 			while(count != 0) {
 				file_buf = (char*)malloc(BUFLEN*sizeof(char));
 				size_t newLen = fread(file_buf, sizeof(char), BUFLEN, fp);
@@ -195,8 +206,9 @@ int main(int argc, char** argv)
 					*(short *) (packet) = (short) htons(1); /* 1 means it is a ftp packet */
 					*(short *) (packet+2) = (short) htons(ns_seq);
 					strcpy(packet+4,file_buf);
-
-					if (sendto(sock, packet, PCKSIZE, 0, (struct sockaddr *)&sin, slen) ==-1) {
+					
+					int pck_size = 4+newLen;
+					if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) ==-1) {
 						perror("buffer sending failure\n");
 						exit(1);
 					}
@@ -216,22 +228,37 @@ int main(int argc, char** argv)
 			if(retrans_signal[i] == 1) {
 				retrans_signal[i] = 0;
 				/* create the ftp packet */
+				packet = (char*)malloc(PCKSIZE*sizeof(char)); 
 				*(short *) (packet) = (short) htons(1); /* 1 means it is a ftp packet */
 				*(short *) (packet+2) = (short) htons(i);
 				strcpy(packet+4,retrans_buffer[i]);
 				printf("retransmitting packet with sequence number %d\n",i);
-				if (sendto(sock, packet, PCKSIZE, 0, (struct sockaddr *)&sin, slen) ==-1) {
+				int pck_size = 4+strlen(retrans_buffer[i]);
+				if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) ==-1) {
 					perror("buffer sending failure\n");
 					exit(1);
 				}
 				set_alarm(i,1.5*rtt);
-				seq[i] = 1;
+				//seq[i] = 1;
 			}
 		}		
 	    }
 	    fclose(fp);
 	}
 
+	for (i=0; i < MSGS; i++) {
+		sprintf(buf, "This is packet %d", i);
+		if (sendto(sock, buf, strlen(buf), 0, (struct sockaddr *)&sin, slen)==-1) {
+			perror("sendto");
+			exit(1);
+		}
+		/* now receive an acknowledgement from the server */
+		recvlen = recvfrom(sock, buf, BUFLEN, 0, (struct sockaddr *)&sin, &slen);
+                if (recvlen >= 0) {
+                        buf[recvlen] = 0;	/* expect a printable string - terminate it */
+                        printf("received message: \"%s\"\n", buf);
+                }
+	}
 	close(sock);   
 	return 0;
 }
