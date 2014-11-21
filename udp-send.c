@@ -9,6 +9,8 @@
 #include <signal.h>     /* for signal */
 #include "packet.h"
 
+#define ALPHA 0.875  
+
 /* using queue to handle the sequence of each timeout */
 typedef struct {
         int first;                      /* position of first element */
@@ -92,8 +94,8 @@ int main(int argc, char** argv)
 	int file_size = ftell(fp);
 	rewind(fp);
 	printf("The file size is %d\n",file_size);
-	
-	printf("check1 \n"); 
+			
+
 	/* initial packet*/
 	packet = (char*)malloc(PCKSIZE*sizeof(char)); 
 	gettimeofday(&tv,NULL);
@@ -108,20 +110,42 @@ int main(int argc, char** argv)
 		perror("ping packet sending failure\n");
 		exit(1);
 	}
-
-	//free(packet);
+	/* set timeout for ping pong packet */	
+	tv.tv_sec = 10;
+	tv.tv_usec = 0;
+	if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv))<0){
+		printf("socket option  SO_RCVTIMEO not support\n");
+			return;
+	}
 	/* now receive a pong packet from the server */
+	while(1) {
 	recvlen = recvfrom(sock, buf, BUFLEN, 0, (struct sockaddr *)&sin, &slen);
-        if (recvlen >= 0) {
+	if(recvlen < 0) { /* timeout occurs, trigger a retransmission */
+		printf("recvfrom timeout\n");
+		gettimeofday(&tv,NULL);
+		/* send a ping-pong message to get the rtt */
+		*(short *) packet = (short) htons(0); /* 0 means it is a ping packet*/
+		*(int *) (packet+2) = (int) htonl(tv.tv_sec);
+		*(int *) (packet+6) = (int) htonl(tv.tv_usec);
+		*(int *) (packet+10) = (int) htonl(file_size);
+	
+		printf("sending ping pong packet\n");
+		if (sendto(sock, packet, PCKSIZE, 0, (struct sockaddr *)&sin, slen)==-1) {
+			perror("ping packet sending failure\n");
+			exit(1);
+		}
+	}
+	else if (recvlen >= 0) {
+	
         	buf[recvlen] = 0;	/* expect a printable string - terminate it */
 		int tv_sec, tv_usec;
 		tv_sec =  (int)ntohl(*(int *)(buf+2));
 		tv_usec = (int)ntohl(*(int *)(buf+6));
 		
 		gettimeofday(&tv,NULL);
-		//printf("tv sec: %d - %d, tv usec %d - %d\n",tv.tv_sec, tv_sec, tv.tv_usec, tv_usec);
         	rtt = 1000000*(tv.tv_sec - tv_sec) + (tv.tv_usec-tv_usec);
-		//rtt = 1000000;
+		break;
+	}
 	}
 
 	printf("The RTT is %d\n",rtt);
@@ -145,13 +169,16 @@ int main(int argc, char** argv)
 			printf("sending packet with sequence number %d\n",ns_seq);
 			//printf("The buffer contains:\n");
 			//printf("%s\n\n",file_buf);
-			
+
+			gettimeofday(&tv,NULL);
 			/* create the ftp packet */
 			*(short *) (packet) = (short) htons(1); /* 1 means it is a ftp packet */
-			*(short *) (packet+2) = (short) htons(ns_seq);
-			strcpy(packet+4,file_buf);
-			int pck_size = 4+newLen;
-
+			*(int *) (packet+2) = (int) htonl(tv.tv_sec);
+			*(int *) (packet+6) = (int) htonl(tv.tv_usec);
+			*(short *) (packet+10) = (short) htons(ns_seq);
+			strcpy(packet+12,file_buf);
+			int pck_size = 12+newLen;
+			printf("packet size is %d\n",pck_size);
 			if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) ==-1) {
 				perror("buffer sending failure\n");
 				exit(1);
@@ -177,7 +204,21 @@ int main(int argc, char** argv)
                         packet[recvlen] = 0;
 			short ack_num = (short) ntohs(*(short *)(packet));
 			printf("The acknowledge number is %d\n",ack_num);
+			
+			if(seq[ack_num] == 2) { /* this packet has already arrived */
+				continue;
+			}
+
 			seq[ack_num] = 2; /* sequence number is acknowledged */
+			
+			/* update the rtt based on the new rtt */
+			int tv_sec, tv_usec;
+			tv_sec =  (int)ntohl(*(int *)(buf+2));
+			tv_usec = (int)ntohl(*(int *)(buf+6));
+			
+			gettimeofday(&tv,NULL);
+			int newRtt = 1000000*(tv.tv_sec - tv_sec) + (tv.tv_usec-tv_usec);
+			rtt = ALPHA*rtt + (1-ALPHA)*newRtt;
 			
 			int count=0;
 			if(ack_num == la_seq) { 
@@ -187,10 +228,10 @@ int main(int argc, char** argv)
 					count++;
 					i = (i+1)%(PCK_ROUND*2);
 
-				}
+				} 
 			la_seq = (la_seq+count)%(PCK_ROUND*2);
 			}
-		/* multiple packets accumulated to be sent */
+		        /* multiple packets accumulated to be sent */
 			while(count != 0) {
 				file_buf = (char*)malloc(BUFLEN*sizeof(char));
 				size_t newLen = fread(file_buf, sizeof(char), BUFLEN, fp);
@@ -202,12 +243,17 @@ int main(int argc, char** argv)
 					//printf("The buffer contains:\n");
 					//printf("%s\n",file_buf);
 					printf("sending packet with sequence number %d\n",ns_seq);
+					
+					gettimeofday(&tv,NULL);
 					/* create the ftp packet */
 					*(short *) (packet) = (short) htons(1); /* 1 means it is a ftp packet */
-					*(short *) (packet+2) = (short) htons(ns_seq);
-					strcpy(packet+4,file_buf);
+					*(int *) (packet+2) = (int) htonl(tv.tv_sec);
+					*(int *) (packet+6) = (int) htonl(tv.tv_usec);
+					*(short *) (packet+10) = (short) htons(ns_seq);
+					strcpy(packet+12,file_buf);
 					
-					int pck_size = 4+newLen;
+					int pck_size = 12+newLen;
+					printf("packet size is %d\n",pck_size);
 					if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) ==-1) {
 						perror("buffer sending failure\n");
 						exit(1);
@@ -225,15 +271,20 @@ int main(int argc, char** argv)
                 } // end of transmit new file
 		/* check for transmission packets */
 		for(i=0;i<PCK_ROUND*2;i++) {			
-			if(retrans_signal[i] == 1) {
+			if(retrans_signal[i] == 1 && seq[i] == 1) {
 				retrans_signal[i] = 0;
+
+				gettimeofday(&tv,NULL);
 				/* create the ftp packet */
 				packet = (char*)malloc(PCKSIZE*sizeof(char)); 
 				*(short *) (packet) = (short) htons(1); /* 1 means it is a ftp packet */
-				*(short *) (packet+2) = (short) htons(i);
-				strcpy(packet+4,retrans_buffer[i]);
+				*(int *)  (packet+2) = (int) htonl(tv.tv_sec);
+				*(int *)  (packet+6) = (int) htonl(tv.tv_usec);
+				*(short *) (packet+10) = (short) htons(i);
+				strcpy(packet+12,retrans_buffer[i]);
+
 				printf("retransmitting packet with sequence number %d\n",i);
-				int pck_size = 4+strlen(retrans_buffer[i]);
+				int pck_size = 12+strlen(retrans_buffer[i]);
 				if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) ==-1) {
 					perror("buffer sending failure\n");
 					exit(1);
@@ -246,20 +297,7 @@ int main(int argc, char** argv)
 	    fclose(fp);
 	}
 
-	for (i=0; i < MSGS; i++) {
-		sprintf(buf, "This is packet %d", i);
-		if (sendto(sock, buf, strlen(buf), 0, (struct sockaddr *)&sin, slen)==-1) {
-			perror("sendto");
-			exit(1);
-		}
-		/* now receive an acknowledgement from the server */
-		recvlen = recvfrom(sock, buf, BUFLEN, 0, (struct sockaddr *)&sin, &slen);
-                if (recvlen >= 0) {
-                        buf[recvlen] = 0;	/* expect a printable string - terminate it */
-                        printf("received message: \"%s\"\n", buf);
-                }
-	}
-	close(sock);   
+	close(sock);
 	return 0;
 }
 
