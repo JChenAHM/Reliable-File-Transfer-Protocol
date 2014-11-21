@@ -364,10 +364,12 @@ int main(int argc, char** argv)
 							//printf("%s\n",file_buf);
 							printf("sending packet with sequence number %d\n", ns_seq);
 							/* create the ftp packet */
-							*(short *)(packet) = (short)htons(1); /* 1 means it is a ftp packet */
-							*(short *)(packet + 2) = (short)htons(ns_seq);
-							strcpy(packet + 4, file_buf);
-							int pck_size = 4 + newLen;
+							md5((uint8_t*)packet, strlen(packet), (uint8_t*)checkSum2);
+							memcpy(packet, checkSum2, 16);
+							*(short *)(packet + 16) = (short)htons(1); /* 1 means it is a ftp packet */
+							*(short *)(packet + 18) = (short)htons(ns_seq);
+							strcpy(packet + 20, file_buf);
+							int pck_size = 20 + newLen;
 							if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) == -1) {
 								perror("buffer sending failure\n");
 								exit(1);
@@ -394,11 +396,13 @@ int main(int argc, char** argv)
 					retrans_signal[i] = 0;
 					/* create the ftp packet */
 					packet = (char*)malloc(PCKSIZE*sizeof(char));
-					*(short *)(packet) = (short)htons(1); /* 1 means it is a ftp packet */
-					*(short *)(packet + 2) = (short)htons(i);
-					strcpy(packet + 4, retrans_buffer[i]);
+					md5((uint8_t*)packet, strlen(packet), (uint8_t*)checkSum3);
+					memcpy(packet, checkSum3, 16);
+					*(short *)(packet + 16) = (short)htons(1); /* 1 means it is a ftp packet */
+					*(short *)(packet + 18) = (short)htons(i);
+					strcpy(packet + 20, retrans_buffer[i]);
 					printf("retransmitting packet with sequence number %d\n", i);
-					int pck_size = 4 + strlen(retrans_buffer[i]);
+					int pck_size = 20 + strlen(retrans_buffer[i]);
 					if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) == -1) {
 						perror("buffer sending failure\n");
 						exit(1);
