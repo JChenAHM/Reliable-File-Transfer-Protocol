@@ -1,25 +1,26 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <netdb.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <time.h>
+#include <sys/time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <iostream>
+#include <errno.h>
+#include "packet.h"
+
 /* Simple MD5 implementation
 *
 * usage: call function md5(const uint8_t *msg, size_t length, uint8_t *result)
 *        "result" should have at least 16 bytes space
 *        then the first 16 bytes in result will be filled with the digest of msg
 */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <stdint.h>
-#include <iostream>
-#include <errno.h>
-
-#define BUFSIZE 2048
-
 // Constants are the integer part of the sines of integers (in radians) * 2^32.
 const uint32_t k[64] = {
 	0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
@@ -84,7 +85,7 @@ void md5(const uint8_t *initial_msg, size_t initial_len, uint8_t *digest) {
 
 	//Pre-processing:
 	//append "1" bit to message    
-	//append "0" bits until message length in bits ≡ 448 (mod 512)
+	//append "0" bits until message length in bits กิ 448 (mod 512)
 	//append length mod (2^64) to message
 
 	for (new_len = initial_len + 1; new_len % (512 / 8) != 448 / 8; new_len++)
@@ -105,7 +106,7 @@ void md5(const uint8_t *initial_msg, size_t initial_len, uint8_t *digest) {
 	//for each 512-bit chunk of message:
 	for (offset = 0; offset<new_len; offset += (512 / 8)) {
 
-		// break chunk into sixteen 32-bit words w[j], 0 ≤ j ≤ 15
+		// break chunk into sixteen 32-bit words w[j], 0 ก j ก 15
 		for (i = 0; i < 16; i++)
 			w[i] = to_int32(msg + offset + i * 4);
 
@@ -161,24 +162,18 @@ void md5(const uint8_t *initial_msg, size_t initial_len, uint8_t *digest) {
 	to_bytes(h3, digest + 12);
 }
 
-/* get data length of the receiving packet */
-unsigned int getDataLen(char *packet){
-	unsigned int dataLen = ntohs(*((unsigned int*)(packet + sizeof(unsigned int)+4 * sizeof(unsigned int))));
-	return dataLen;
-}
-
 /* generate a ack packet including md5 */
 char *generateAck(unsigned int AckNum, char* md5Ack){
-	char* packet = (char*)malloc(sizeof(int)* 5);
+	char* packet = (char*)malloc(18);
 	*((unsigned int *)packet) = htons(AckNum);
-	memcpy(packet + sizeof(unsigned int), md5Ack, 4 * sizeof(unsigned int));
+	memcpy(packet + 2, md5Ack, 16);
 	return packet;
 }
 
 /* get md5 from the receiving packet */
 char *getMD5(char* packet){
-	char* md5Packet = (char*)malloc(4 * sizeof(unsigned int));
-	memcpy(md5Packet, packet + sizeof(unsigned int), 4 * sizeof(unsigned int));
+	char* md5Packet = (char*)malloc(16);
+	memcpy(md5Packet, packet, 16);
 	return md5Packet;
 }
 
@@ -188,37 +183,142 @@ bool checkMD5(char *md5packet, char *md5result){
 	return result == 0 ? true : false;
 }
 
-/* check md5 when writing file*/
-/*bool checkFile(char *packet, unsigned int packageLength){
-	return true;
-}*/
+int main(int argc, char **argv)
+{
+	int i;
+	struct sockaddr_in sin;	/* our address */
+	struct sockaddr_in remaddr;	/* remote address */
+	socklen_t addrlen = sizeof(remaddr);		/* length of addresses */
+	int recvlen;			/* # bytes received */
+	int fd;				/* our socket */
+	int msgcnt = 0;			/* count # of messages we received */
+	char buf[PCKSIZE];	/* receive buffer */
+	char* packet;			/* sending the ack packet */
+	unsigned short server_port = atoi(argv[1]);
+	FILE *fp;			/* pointer to the destination file */
 
-int main(int argc, char **argv){
-	char md5Generated[16];
+	char* content[PCK_ROUND * 2];	/* The array to hold the received content buffer */
+	int window[PCK_ROUND * 2];	/* Receiver window size */
+	int remaining_file_size = 0;	/* The number of bits remaining to be received */
+
+	/*
+	* 0 if packet is not received
+	* 1 if packet is received
+	*/
+	for (i = 0; i<PCK_ROUND * 2; i++) {
+		window[i] = 0;
+	}
+
+	for (i = 0; i<PCK_ROUND * 2; i++) {
+		content[i] = (char*)malloc(BUFLEN*sizeof(char));
+	}
+
+	/* create a UDP socket */
+	if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+		perror("cannot create socket\n");
+		return 0;
+	}
+
+	/* bind the socket to any valid IP address and a specific port */
+
+	memset((char *)&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(INADDR_ANY);
+	sin.sin_port = htons(server_port);
+
+	if (bind(fd, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+		perror("bind failed");
+		return 0;
+	}
+
+	bool packetRelated[2] = { false };
+	char* checksum;
+	char checkmd5[16];
 	char md5ForAck[16];
-	char* data;
-	char* ack;
-	char buf[BUFSIZE];
-	char* checkSum;
-	bool ifRightData = false;
-	while (1){
-		/*if (recvlen < 0){}*/
-		if (...){ // add condition for recvlen
-			checkSum = getMD5(buf);
-			md5((uint8_t*)data, getDataLen(buf), (uint8_t*)md5Generated);
-			ifRightData = checkMD5(checkSum, md5Generated);
-			if (ifRightData && se < 3){ // sequenceNumber
-				if (se == 1){}
-				if (se == 2){}
-				// send ack including a generated md5
-				md5((uint8_t*)&se, sizeof(int), (uint8_t*)md5ForAck);
-				ack = generateAck(se, md5ForAck);
-				if (sendto()){} // add condition for sending
+	bool isRightData = false;
+	/* now loop, receiving data and write the payload into a given file */
+	printf("waiting on port %d\n", server_port);
+	while (1) {
+		recvlen = recvfrom(fd, buf, PCKSIZE, 0, (struct sockaddr *)&remaddr, &addrlen);
+		printf("received length is %d\n", recvlen);
+		if (recvlen == strlen(buf + 20) && recvlen - 16 <= strlen(buf)) {
+			checksum = getMD5(buf);
+			char* data = (char *)malloc(recvlen - 16);
+			memcpy(data, buf + 20, recvlen - 16);
+			md5((uint8_t*)data, recvlen - 16, (uint8_t*)checkmd5);
+			isRightData = checkMD5(checksum, checkmd5);
+			if (isRightData){
+				buf[recvlen] = 0;
+				short type = (short)ntohs(*(short*)(buf + 16));
+				/* if it is a ping pong message */
+				if (type == 0) {
+					packetRelated[0] = true;
+					remaining_file_size = (int)ntohl(*(int*)(buf + 10));
+					fp = fopen("copy.txt", "w");
+					if (sendto(fd, buf, 20, 0, (struct sockaddr *)&remaddr, addrlen) < 0)
+						perror("sendto");
+				}
+				else{ /* else it is a data packet */
+					short seq_num = (short)ntohs(*(short*)(buf + 18));
+					packetRelated[1] = true;
+					/* The packet with this sequence number has not been received */
+					if (window[seq_num] != 1) {
+						int file_buf_size = recvlen - 20 - 1; /* the received buffer size minus the headers' size */
+						remaining_file_size -= file_buf_size;
+						window[seq_num] = 1;
+						strcpy(content[seq_num], buf + 20);
+
+						printf("The size of the buffer is %d\n", file_buf_size);
+					}
+					/* sending back acknowledgement*/
+					printf("The sequence number is %d\n", seq_num);
+					md5((uint8_t*)&seq_num, 2, (uint8_t*)md5ForAck);
+					packet = generateAck(seq_num, md5ForAck);
+					printf("sending ack %d\n", seq_num);
+					if (sendto(fd, packet, 20, 0, (struct sockaddr *)&remaddr, addrlen) < 0)
+						perror("sendto");
+				}
 			}
 			else{
 				printf("recv corrupt packet \n");
 			}
 		}
-	}
-}
+		if (packetRelated[0] && packetRelated[1]){
+			break;
+		}
 
+		/* check if all the packet in the window is received */
+		int ready_flag = 1;
+		for (i = 0; i<PCK_ROUND * 2; i++){
+			if (window[i] == 0){
+				ready_flag = 0;
+				break;
+			}
+		}
+		/* write to the file if all packets in one sliding window is received */
+		if (ready_flag == 1){
+			for (i = 0; i<PCK_ROUND * 2; i++){
+				//	printf("The received content is %s\n",content[i]);
+				printf("strlen is %d", strlen(content[i]) - 1);
+				fwrite(content[i], 1, strlen(content[i]) - 1, fp);
+				content[i] = (char*)malloc(BUFLEN*sizeof(char));
+				window[i] = 0;
+			}
+		}
+
+		/* check if the last packet has arrived, write the remaining content to the file */
+		if (remaining_file_size <= 0){
+			for (i = 0; i<PCK_ROUND * 2; i++){
+				if (window[i] == 1){
+					//	printf("The received content is %s\n",content[i]);
+					fwrite(content[i], 1, strlen(content[i]) - 1, fp);
+				}
+				content[i] = (char*)malloc(BUFLEN*sizeof(char));
+				window[i] = 0;
+			}
+			fclose(fp);
+		}
+	}
+	/* never exits */
+}
+// udp-send ring.clear.rice.edu 18000
