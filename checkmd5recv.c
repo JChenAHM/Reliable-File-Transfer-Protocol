@@ -164,14 +164,6 @@ void md5(const uint8_t *initial_msg, size_t initial_len, uint8_t *digest) {
 	to_bytes(h3, digest + 12);
 }
 
-/* generate a ack packet including md5 */
-char *generateAck(char* md5Ack, unsigned int AckNum){
-	char* packet = (char*)malloc(18);
-	memcpy(packet, md5Ack, 16);
-	*((unsigned int *)packet + 16) = htons(AckNum);
-	return packet;
-}
-
 /* get md5 from the receiving packet */
 char *getMD5(char* packet){
 	char* md5Packet = (char*)malloc(16);
