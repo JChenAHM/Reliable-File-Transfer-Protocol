@@ -17,6 +17,7 @@
 #include "packet.h"
 
 #define ALPHA 0.875  
+#define SEQ_LENGTH 5000
 
 /* using queue to handle the sequence of each timeout */
 typedef struct {
@@ -34,7 +35,7 @@ struct alarm_time{
 	int tv_usec;
 	int duration;
 };
-struct alarm_time alarm_list[PCK_ROUND * 2];
+struct alarm_time alarm_list[SEQ_LENGTH];
 #include "alarm.h"
 
 
@@ -48,9 +49,9 @@ int la_seq;		/* the least acknowledge sequence number */
 int ns_seq;		/* the sequence number to be sent next */
 
 
-int seq[PCK_ROUND * 2];	/* array of sequence number */
-int retrans_signal[PCK_ROUND * 2];/* array that indicate packet retrasmission */
-char* retrans_buffer[PCK_ROUND * 2];/* buffer that hold the packet to be retransmitted */
+int seq[SEQ_LENGTH];	/* array of sequence number */
+int retrans_signal[SEQ_LENGTH];/* array that indicate packet retrasmission */
+char* retrans_buffer[SEQ_LENGTH];/* buffer that hold the packet to be retransmitted */
 
 /* Simple MD5 implementation
 *
@@ -222,13 +223,13 @@ int main(int argc, char** argv)
 	* 1: being transmitted, waiting for ack
 	* 2: ack received
 	*/
-	for (i = 0; i<PCK_ROUND * 2; i++){
+	for (i = 0; i<SEQ_LENGTH; i++){
 		seq[i] = 0;
 	}
 	/* 0: no need to retransmission
 	* 1: need retransmission
 	*/
-	for (i = 0; i<PCK_ROUND * 2; i++){
+	for (i = 0; i<SEQ_LENGTH; i++){
 		retrans_signal[i] = 0;
 	}
 
@@ -256,7 +257,7 @@ int main(int argc, char** argv)
 
 	char checkSum1[16];
 	char checkSum2[16];
-	char checkSum6[16];
+	char checkSum3[16];
 	bool isRightData = false;
 
 	/* initial packet*/
@@ -275,13 +276,15 @@ int main(int argc, char** argv)
 		perror("ping packet sending failure\n");
 		exit(1);
 	}
+
 	/* set timeout for ping pong packet */
-	tv.tv_sec = 10;
+	tv.tv_sec = 3;
 	tv.tv_usec = 0;
 	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv))<0){
 		printf("socket option  SO_RCVTIMEO not support\n");
 		return;
 	}
+
 	/* now receive a pong packet from the server */
 	while (1) {
 		recvlen = recvfrom(sock, buf, BUFLEN, 0, (struct sockaddr *)&sin, &slen);
@@ -290,7 +293,7 @@ int main(int argc, char** argv)
 			gettimeofday(&tv, NULL);
 
 			/* send a ping-pong message to get the rtt */
-			*(short *)(packet + 16) = (short)htons(0); /* 0 means it is a ping packet*/
+			*(short *)(packet + 16)= (short)htons(0); /* 0 means it is a ping packet*/
 			*(int *)(packet + 18) = (int)htonl(tv.tv_sec);
 			*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 			*(int *)(packet + 26) = (int)htonl(file_size);
@@ -304,14 +307,16 @@ int main(int argc, char** argv)
 			}
 		}
 		else if (recvlen >= 0) {
+
 			buf[recvlen] = 0;	/* expect a printable string - terminate it */
 			char *md5Ack0 = getMD5ForAck(buf);
-			md5((uint8_t*)(buf + 16), recvlen - 16, (uint8_t*)checkSum6);
-			isRightData = checkMD5(checkSum6, md5Ack0);
+			md5((uint8_t*)(buf + 16), recvlen - 16, (uint8_t*)checkSum3);
+			isRightData = checkMD5(checkSum3, md5Ack0);
 			if (isRightData){
 				int tv_sec, tv_usec;
 				tv_sec = (int)ntohl(*(int *)(buf + 18));
 				tv_usec = (int)ntohl(*(int *)(buf + 22));
+
 				gettimeofday(&tv, NULL);
 				rtt = 1000000 * (tv.tv_sec - tv_sec) + (tv.tv_usec - tv_usec);
 				break;
@@ -327,9 +332,9 @@ int main(int argc, char** argv)
 	/* read file to a buffer with BUFLEN length and send it to the sever continuously*/
 	packet = (char*)malloc(PCKSIZE*sizeof(char));
 	file_buf = (char*)malloc(BUFLEN*sizeof(char));
-	char checkSum3[16];
 	char checkSum4[16];
 	char checkSum5[16];
+	char checkSum6[16];
 
 	if (fp != NULL) {
 
@@ -347,8 +352,8 @@ int main(int argc, char** argv)
 				printf("sending packet with sequence number %d\n", ns_seq);
 				//printf("The buffer contains:\n");
 				//printf("%s\n\n",file_buf);
-				gettimeofday(&tv, NULL);
 
+				gettimeofday(&tv, NULL);
 				/* create the ftp packet */
 				*(short *)(packet + 16) = (short)htons(1); /* 1 means it is a ftp packet */
 				*(int *)(packet + 18) = (int)htonl(tv.tv_sec);
@@ -369,7 +374,7 @@ int main(int argc, char** argv)
 				/* store the buffer for retransmission */
 				retrans_buffer[ns_seq] = (char*)malloc(BUFLEN*sizeof(char));
 				strcpy(retrans_buffer[ns_seq], file_buf);
-				ns_seq = (ns_seq + 1) % (PCK_ROUND * 2);
+				ns_seq++;
 				free(file_buf);
 			}
 			i++;
@@ -385,9 +390,10 @@ int main(int argc, char** argv)
 				packet[recvlen] = 0;
 				short ack_num = (short)ntohs(*(short *)(packet + 16));
 				char *md5Ack1 = getMD5ForAck(packet);
-				md5((uint8_t*)(packet - 16), recvlen - 16, (uint8_t*)checkSum3);
-				if (memcmp(md5Ack1, checkSum3, 16) == 0){
+				md5((uint8_t*)(packet + 16), recvlen - 16, (uint8_t*)checkSum4);
+				if (memcmp(md5Ack1, checkSum4, 16) == 0){
 					printf("The acknowledge number is %d\n", ack_num);
+
 					if (seq[ack_num] == 2) { /* this packet has already arrived */
 						continue;
 					}
@@ -407,12 +413,10 @@ int main(int argc, char** argv)
 					if (ack_num == la_seq) {
 						i = la_seq;
 						while (seq[i] == 2) {
-							seq[i] = 0; /*sliding windows moving right*/
+							seq[i++] = 0; /*sliding windows moving right*/
 							count++;
-							i = (i + 1) % (PCK_ROUND * 2);
-
 						}
-						la_seq = (la_seq + count) % (PCK_ROUND * 2);
+						la_seq = la_seq + count;
 					}
 					/* multiple packets accumulated to be sent */
 					while (count != 0) {
@@ -434,10 +438,10 @@ int main(int argc, char** argv)
 							*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 							*(short *)(packet + 26) = (short)htons(ns_seq);
 							strcpy(packet + 28, file_buf);
-							md5((uint8_t*)(packet + 16), newLen + 12, (uint8_t*)checkSum4);
-							memcpy(packet, checkSum4, 16);
+							md5((uint8_t*)(packet + 16), newLen + 12, (uint8_t*)checkSum5);
+							memcpy(packet, checkSum5, 16);
 							int pck_size = 28 + newLen;
-							printf("packet size is %d\n", pck_size);
+							//printf("packet size is %d\n",pck_size);
 
 							if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) == -1) {
 								perror("buffer sending failure\n");
@@ -448,19 +452,19 @@ int main(int argc, char** argv)
 							/* store the buffer for retransmission */
 							retrans_buffer[ns_seq] = malloc(BUFLEN*sizeof(char));
 							strcpy(retrans_buffer[ns_seq], file_buf);
-							ns_seq = (ns_seq + 1) % (PCK_ROUND * 2);
+							ns_seq++;
 							count--;
 							free(file_buf);
 						}
 					}
-				} // end of transmit new file		
+				} // end of transmit new file
 			}
-			else if (recvlen >= 0 && recvlen != 18){
+			else if (recvlen >= 0 && recvlen != 26){
 				printf("ack corrupt \n");
 			}
 
 			/* check for transmission packets */
-			for (i = 0; i<PCK_ROUND * 2; i++) {
+			for (i = la_seq; i<ns_seq; i++) {
 				if (retrans_signal[i] == 1 && seq[i] == 1) {
 					retrans_signal[i] = 0;
 
@@ -472,8 +476,9 @@ int main(int argc, char** argv)
 					*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 					*(short *)(packet + 26) = (short)htons(i);
 					strcpy(packet + 28, retrans_buffer[i]);
-					md5((uint8_t*)(packet + 16), strlen(retrans_buffer[i]) + 12, (uint8_t*)checkSum5);
-					memcpy(packet, checkSum5, 16);
+					md5((uint8_t*)(packet + 16), strlen(retrans_buffer[i]) + 12, (uint8_t*)checkSum6);
+					memcpy(packet, checkSum6, 16);
+
 					printf("retransmitting packet with sequence number %d\n", i);
 					int pck_size = 28 + strlen(retrans_buffer[i]);
 					if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) == -1) {
@@ -507,7 +512,7 @@ void check_expire() {
 	int i;
 	struct timeval tv;
 	/* go through all the possible sequence number */
-	for (i = 0; i<PCK_ROUND * 2; i++) {
+	for (i = la_seq; i<ns_seq; i++) {
 		if (alarm_list[i].is_set == 1) {
 			gettimeofday(&tv, NULL);
 			int elapsed_time = (tv.tv_sec - alarm_list[i].tv_sec) * 1000000 + (tv.tv_usec - alarm_list[i].tv_usec);
