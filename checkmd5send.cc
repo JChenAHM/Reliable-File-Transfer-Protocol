@@ -195,8 +195,21 @@ void md5(const uint8_t *initial_msg, size_t initial_len, uint8_t *digest) {
 /* get md5 from receiving ack*/
 char* getMD5ForAck(char *ackPacket){
 	char* md5ForAck = (char *)malloc(16);
-	memcpy(md5ForAck, ackPacket, 16);
+	memcpy(md5ForAck, ackPacket + 2, 16);
 	return md5ForAck;
+}
+
+/* get md5 from receiving pong packet */
+char* getMD5ForPong(char *pongPacket){
+	char* md5ForPong = (char *)malloc(16);
+	memcpy(md5ForPong, pongPacket, 16);
+	return md5ForPong;
+}
+
+/* check if the md5 from packet is the same as the generated one */
+bool checkMD5(char *md5code, char *checksum){
+	int result = memcmp(md5code, checksum, 16);
+	return result == 0 ? true : false;
 }
 
 int main(int argc, char** argv)
@@ -250,6 +263,9 @@ int main(int argc, char** argv)
 
 	char checkSum1[16];
 	char checkSum2[16];
+	char checkSum6[16];
+	bool isRightData = false;
+
 	/* initial packet*/
 	packet = (char*)malloc(PCKSIZE*sizeof(char));
 	gettimeofday(&tv, NULL);
@@ -258,7 +274,7 @@ int main(int argc, char** argv)
 	*(int *)(packet + 18) = (int)htonl(tv.tv_sec);
 	*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 	*(int *)(packet + 26) = (int)htonl(file_size);
-	md5((uint8_t*)packet, strlen(packet), (uint8_t*)checkSum1);
+	md5((uint8_t*)(packet + 16), strlen(packet), (uint8_t*)checkSum1);
 	memcpy(packet, checkSum1, 16);
 
 	printf("sending ping pong packet\n");
@@ -279,12 +295,13 @@ int main(int argc, char** argv)
 		if (recvlen < 0) { /* timeout occurs, trigger a retransmission */
 			printf("recvfrom timeout\n");
 			gettimeofday(&tv, NULL);
+
 			/* send a ping-pong message to get the rtt */
 			*(short *)(packet + 16) = (short)htons(0); /* 0 means it is a ping packet*/
 			*(int *)(packet + 18) = (int)htonl(tv.tv_sec);
 			*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 			*(int *)(packet + 26) = (int)htonl(file_size);
-			md5((uint8_t*)packet, strlen(packet), (uint8_t*)checkSum2);
+			md5((uint8_t*)(packet + 16), strlen(packet), (uint8_t*)checkSum2);
 			memcpy(packet, checkSum2, 16);
 
 			printf("sending ping pong packet\n");
@@ -294,15 +311,21 @@ int main(int argc, char** argv)
 			}
 		}
 		else if (recvlen >= 0) {
-
 			buf[recvlen] = 0;	/* expect a printable string - terminate it */
-			int tv_sec, tv_usec;
-			tv_sec = (int)ntohl(*(int *)(buf + 2));
-			tv_usec = (int)ntohl(*(int *)(buf + 6));
-
-			gettimeofday(&tv, NULL);
-			rtt = 1000000 * (tv.tv_sec - tv_sec) + (tv.tv_usec - tv_usec);
-			break;
+			char *md5Pong = getMD5ForPong(buf);
+			md5((uint8_t*)(buf + 16), recvlen, (uint8_t*)checkSum6);
+			isRightData = checkMD5(checkSum6, md5Pong);
+			if (isRightData){
+				int tv_sec, tv_usec;
+				tv_sec = (int)ntohl(*(int *)(buf + 18));
+				tv_usec = (int)ntohl(*(int *)(buf + 22));
+				gettimeofday(&tv, NULL);
+				rtt = 1000000 * (tv.tv_sec - tv_sec) + (tv.tv_usec - tv_usec);
+				break;
+			}
+			else{
+				printf("recv corrupt packet \n");
+			}
 		}
 	}
 
@@ -314,6 +337,7 @@ int main(int argc, char** argv)
 	char checkSum3[16];
 	char checkSum4[16];
 	char checkSum5[16];
+
 	if (fp != NULL) {
 
 		i = 0;
@@ -330,18 +354,19 @@ int main(int argc, char** argv)
 				printf("sending packet with sequence number %d\n", ns_seq);
 				//printf("The buffer contains:\n");
 				//printf("%s\n\n",file_buf);
-
 				gettimeofday(&tv, NULL);
+
 				/* create the ftp packet */
 				*(short *)(packet + 16) = (short)htons(1); /* 1 means it is a ftp packet */
 				*(int *)(packet + 18) = (int)htonl(tv.tv_sec);
 				*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 				*(short *)(packet + 26) = (short)htons(ns_seq);
 				strcpy(packet + 28, file_buf);
-				md5((uint8_t*)packet, newLen + 12, (uint8_t*)checkSum3);
+				md5((uint8_t*)(packet + 16), newLen + 12, (uint8_t*)checkSum3);
 				memcpy(packet, checkSum3, 16);
 				int pck_size = 28 + newLen;
 				printf("packet size is %d\n", pck_size);
+
 				if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) == -1) {
 					perror("buffer sending failure\n");
 					exit(1);
@@ -416,10 +441,11 @@ int main(int argc, char** argv)
 							*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 							*(short *)(packet + 26) = (short)htons(ns_seq);
 							strcpy(packet + 28, file_buf);
-							md5((uint8_t*)packet, newLen + 12, (uint8_t*)checkSum4);
+							md5((uint8_t*)(packet + 16), newLen + 12, (uint8_t*)checkSum4);
 							memcpy(packet, checkSum4, 16);
 							int pck_size = 28 + newLen;
 							printf("packet size is %d\n", pck_size);
+
 							if (sendto(sock, packet, pck_size, 0, (struct sockaddr *)&sin, slen) == -1) {
 								perror("buffer sending failure\n");
 								exit(1);
@@ -434,9 +460,10 @@ int main(int argc, char** argv)
 							free(file_buf);
 						}
 					}
-				} // end of transmit new file
-				else if (recvlen > 0 && recvlen != 18){
-					printf("ack corrupt \n");
+				} // end of transmit new file		
+			}
+			else if (recvlen >= 0 && recvlen != 18){
+				printf("ack corrupt \n");
 			}
 
 			/* check for transmission packets */
@@ -452,7 +479,7 @@ int main(int argc, char** argv)
 					*(int *)(packet + 22) = (int)htonl(tv.tv_usec);
 					*(short *)(packet + 26) = (short)htons(i);
 					strcpy(packet + 28, retrans_buffer[i]);
-					md5((uint8_t*)packet, strlen(retrans_buffer[i]) + 12, (uint8_t*)checkSum5);
+					md5((uint8_t*)(packet + 16), strlen(retrans_buffer[i]) + 12, (uint8_t*)checkSum5);
 					memcpy(packet, checkSum5, 16);
 					printf("retransmitting packet with sequence number %d\n", i);
 					int pck_size = 28 + strlen(retrans_buffer[i]);
